@@ -66,38 +66,38 @@ Create an instance of Windows Server 2012 R2.  Install the necessary software an
 IMPORTANT:  You will have to change pathnames in the files to match your operating system.
 
 ### Create a Folder called “Production” 
-•	Place the DayBehindFix.pyw in it. This file controls the two scripts listed below.  Use Windows Task Scheduler to run this script.
-•	Place the OverdosePython.pyw Python script in the Production folder
-•	We’ve included a second one OverdosePython_DayBehind that allows for catch-up geoprocessing if a day’s data is missed
+- Place the DayBehindFix.pyw in it. This file controls the two scripts listed below.  Use Windows Task Scheduler to run this script.
+- Place the OverdosePython.pyw Python script in the Production folder
+- We’ve included a second one OverdosePython_DayBehind that allows for catch-up geoprocessing if a day’s data is missed
 
 Create a Folder called “Daily Narcan Data”
-•	This is where downloaded EMS data will go
+- This is where downloaded EMS data will go
 
 OPTIONAL:  Create a Folder called Locator
-•	Place your Address Locator here for geocoding 
+- Place your Address Locator here for geocoding 
 
 Create a Folder called “Logs”
-•	Python logs will appear here and show what part in the process completed
+- Python logs will appear here and show what part in the process completed
 
 Create a folder called “satscan_wd”
-•	This is what R will use to temporarily run SaTScan each day.
+- This is what R will use to temporarily run SaTScan each day.
 
 Create a folder called “Workspace”
-•	Place the run_reports.R (for Windows Task Scheduler), outreach_report.RMD, epi_report.RMD, run_report_bad_batch.R (For Windows Task Scheduler), and bad_batch.RMD in this folder.
+- Place the run_reports.R (for Windows Task Scheduler), outreach_report.RMD, epi_report.RMD, run_report_bad_batch.R (For Windows Task Scheduler), and bad_batch.RMD in this folder.
 
-o	Create subfolders called:
-	Bad Batch: Stores PDFs that were used to notify a public messaging service
-	Outreach: Stores Outreach PDF Reports created each day, intended for the outreach team (no point locations)
-	Epidemiology: Stores Epidemiology PDF Reports created eatch day. Epidemiology reports contain all the data that the Outreach reports contain, but additionally include point locations of the overdoses, demographic statistics for each cluster, and a summary graduated circles plot of cases over the previous 30 days. 
-	Reference Data
-•	Add Baltimore_Census_Tracts_Project.shp 
-•	Add Baltimore_coordinates.feet.csv
-•	Add Vital_Signs_16_Census_Demographics.shp
-•	Add Bad_Batch_Regions_Revised.shp
+- Create subfolders called:
+Bad Batch: Stores PDFs that were used to notify a public messaging service
+Outreach: Stores Outreach PDF Reports created each day, intended for the outreach team (no point locations)
+Epidemiology: Stores Epidemiology PDF Reports created eatch day. Epidemiology reports contain all the data that the Outreach reports contain, but additionally include point locations of the overdoses, demographic statistics for each cluster, and a summary graduated circles plot of cases over the previous 30 days. 
+- Reference Data
+- Add Baltimore_Census_Tracts_Project.shp 
+- Add Baltimore_coordinates.feet.csv
+- Add Vital_Signs_16_Census_Demographics.shp
+- Add Bad_Batch_Regions_Revised.shp
 
 Create a Folder called “Historical” 
-•	Place the Historical_Clusters.csv file in it. Can be used in R, ArcGIS, QGIS, etc.
-•	There is a also a historical_clusters.R file for running analysis
+- Place the Historical_Clusters.csv file in it. Can be used in R, ArcGIS, QGIS, etc.
+- There is a also a historical_clusters.R file for running analysis
 
 The R Task Scheduler Setup.R can help you setup the R scripts in Windows Task Scheduler.
 
