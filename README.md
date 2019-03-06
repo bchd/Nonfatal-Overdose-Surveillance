@@ -42,6 +42,7 @@ IMPORTANT: Not all of the code we included is needed.  If your data are already 
 Outlook E-mail Received with Non-fatal Overdose Data->Python script for high-level data cleaning (some cleaning is also done later in R) -> rsatscan package in R calls SaTScan on Windows to perform space-time surveillance-> R is then used to create a report and e-mail the results using R and Outlook. Ideally, a database connection would be used instead.
 
 You will have to change the directories for where you download the daily Excel file with non-fatal overdose data and the geodatabases and folders where your data will be stored.  The process is initiated when a file is received in Outlook e-mail.  Windows Task Scheduler is set to periodically check for an e-mail with the subject line “Daily Naloxone Report.” It can be set to run once a day or multiple times in a day. A Python Script is run that downloads the daily e-mail and saves the Excel file as Daily-Naloxone-Data_YYYY-MM-DD.xlsx.  Next the program opens the file and re-saves without a password—without intervention.  Then the script runs Geocoding and spatial joins (ZIP codes, etc.) eventually outputting the data into a geodatabase.
+
 From this geodatabase, data is further formatted using R, and then SaTScan, a windows-based program for space-time detection, is run via the rsatscan R package to perform space-time surveillance for clusters of non-fatal overdoses. SaTScan utilizes the prospective space-time permutation method to detect clusters, and reports and figures are then generated in R based on these results.  Since cases are rare, the general population distribution of Baltimore is not considered in this analysis.   
 
 For Baltimore City, the parameters used were the following. You may have to adjust these based on what you observe in your jurisdiction.
@@ -49,15 +50,14 @@ For Baltimore City, the parameters used were the following. You may have to adju
 Several other packages are used in the reporting process. Tables and figures based on identified clusters are formatted into automatically generated reports via R Markdown, which are then automatically e-mailed to appropriate audiences using R in combination with outlook.  The process is repeated each day and could also be setup to check every hour or as an e-mail is received.
 
 The space-time permutation method uses point data and circles for clusters instead of census tracts. Spikes are determined using a Prospective Scan Statistic meaning they must still be an active cluster on the day the model is run.  This is why getting daily data is important.  The cluster criteria/model parameters we use are below:
-•	Prospective Scan Statistic – must be active on date of most recent data.
-•	Clusters must have at least 3 cases
-•	Unit of analysis = days
-•	Min Temporal Size = 1 day
-•	Max temporal Size = 5 days to 7 days/week
-•	Max spatial cluster size = 0.75 
-o	Your mileage may vary: if you are doing local or regional (county) surveillance (larger)
-•	(No geographical overlap can also be important)
-•	Since non-fatal overdoses on a given day and location are very small, we ignore population size and use the space-time permutation model.
+- Prospective Scan Statistic – must be active on date of most recent data.
+- Clusters must have at least 3 cases
+- Unit of analysis = days
+- Min Temporal Size = 1 day
+- Max temporal Size = 5 days to 7 days/week
+- Max spatial cluster size = 0.75 Your mileage may vary: if you are doing local or regional (county) surveillance (larger)
+- (No geographical overlap can also be important)
+- Since non-fatal overdoses on a given day and location are very small, we ignore population size and use the space-time permutation model.
 
 Below is a step-by-step series of examples that tell you how to get a development environment running.
 
