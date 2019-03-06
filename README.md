@@ -109,8 +109,8 @@ Place the sample data created from US Census data landmarks but formatted to lik
 Review the R scripts and Markdown files.  Change the start dates to reflect the start dates in the sample data.
 
 At the end of the project, several additional features were added to scripts:
-•	Sending e-mails only when clusters were identified to certain groups
-•	Performing a ‘catch-up’ of geocoding if a daily e-mail was sent late.
+- Sending e-mails only when clusters were identified to certain groups
+- Performing a ‘catch-up’ of geocoding if a daily e-mail was sent late.
 
 REMINDER:  You will have to change pathnames in the scripts to match your operating system.
 
