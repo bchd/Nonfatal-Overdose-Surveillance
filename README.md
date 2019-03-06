@@ -85,7 +85,7 @@ Create a folder called “satscan_wd”
 Create a folder called “Workspace”
 - Place the run_reports.R (for Windows Task Scheduler), outreach_report.RMD, epi_report.RMD, run_report_bad_batch.R (For Windows Task Scheduler), and bad_batch.RMD in this folder.
 
-- Create subfolders called:
+#### Create subfolders called:
 Bad Batch: Stores PDFs that were used to notify a public messaging service
 Outreach: Stores Outreach PDF Reports created each day, intended for the outreach team (no point locations)
 Epidemiology: Stores Epidemiology PDF Reports created eatch day. Epidemiology reports contain all the data that the Outreach reports contain, but additionally include point locations of the overdoses, demographic statistics for each cluster, and a summary graduated circles plot of cases over the previous 30 days. 
