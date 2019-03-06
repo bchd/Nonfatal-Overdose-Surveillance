@@ -89,7 +89,8 @@ Create a folder called “Workspace”
 Bad Batch: Stores PDFs that were used to notify a public messaging service
 Outreach: Stores Outreach PDF Reports created each day, intended for the outreach team (no point locations)
 Epidemiology: Stores Epidemiology PDF Reports created eatch day. Epidemiology reports contain all the data that the Outreach reports contain, but additionally include point locations of the overdoses, demographic statistics for each cluster, and a summary graduated circles plot of cases over the previous 30 days. 
-- Reference Data
+
+Reference Data
 - Add Baltimore_Census_Tracts_Project.shp 
 - Add Baltimore_coordinates.feet.csv
 - Add Vital_Signs_16_Census_Demographics.shp
