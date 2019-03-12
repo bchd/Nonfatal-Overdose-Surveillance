@@ -1,0 +1,113 @@
+---
+#Non-Fatal Opioid Overdose Clusters in Baltimore, MD
+#A historical cluster report
+
+
+header-includes:
+- \usepackage{fancyhdr}
+- \usepackage{lipsum}
+- \pagestyle{fancy}
+- \usepackage{makecell}
+- \usepackage{color}
+
+- \fancyhead[CO,CE]{$\color{red}{\text{\fontsize{20}{20} \selectfont FOR INTERNAL USE ONLY}}$ {\fontsize{15}{15} \selectfont \\Historical Overdose Cluster Map}}
+- \fancyfoot[CO,CE]{Prepared by Baltimore City Health Department (BCFD EMS Data Source)}
+- \fancyfoot[LE,RO]{\thepage}
+- \fancypagestyle{plain}{\pagestyle{fancy}}
+
+output:
+
+  pdf_document: default
+classoption: portrait
+geometry: margin=1.5cm
+---
+
+```{r main_code, include=FALSE, echo = FALSE, warning=FALSE, message=FALSE}
+
+library(dplyr)
+library(ggplot2)
+library(maptools)
+library(reshape2)
+library(rgdal)
+library(devtools)
+library(kableExtra) # extra table formatting stuff
+
+
+setwd("O:/Opioid_Clusters/Testing")
+# read in baltimore shapefile
+balt<- readOGR('O:/Production/Workspace/Reference Data/Baltimore_Census_Tracts_Project.shp')
+
+
+# specify the start date and the end date of interest
+start_date <- as.Date("2018-12-20")
+end_date <- as.Date("2019-02-22")
+
+# get data from the first day of interest
+clusters<-read.csv(paste("O:/Production/Workspace/Outreach/Out_", start_date, '/sig_clusters.csv', sep = ""))
+clusters<-as.data.frame(clusters)
+
+
+for(i in 1:as.numeric(end_date-start_date)){
+  
+  # test whether such file exists, and if it does, add it to the database
+  if (file_test('-f', paste("O:/Production/Workspace/Outreach/Out_",
+      start_date + i, '/sig_clusters.csv',sep = ""))){
+    
+      other<-read.csv(paste("O:/Production/Workspace/Outreach/Out_", start_date + i,
+                        '/sig_clusters.csv', sep = ""))
+    clusters<- rbind(clusters,other)
+  }
+
+}
+
+
+```
+
+
+```{r timeplot, results = 'asis', echo=FALSE, warning=FALSE, message=FALSE, fig.show='hold', fig.height=10, fig.width=12}
+
+  history_map <- ggplot(clusters,aes(x=long,y=lat)) +
+  # plot Baltimore
+  geom_polygon(data = broom::tidy(balt), aes(long, lat, group = group),
+               fill = NA, color = 'black', show.legend = F) + 
+  
+  # the continuous scale
+  stat_density2d(aes(fill=..level.., alpha = 0.5), geom="polygon", h = 5280, show.legend = T) +
+
+  
+  guides(alpha = F, fill = guide_colourbar(barwidth = 1, barheight = 4.7,
+                              ticks = FALSE, title.theme = element_text(face='plain'))) +
+  
+  
+  theme_void() +
+  
+  # coordinate alignment so it doesn't look flat
+  coord_equal(ratio=1) +  
+  
+  # postion the legend appropraitely
+  theme(legend.position = c(0.2, 0.2), legend.direction = "vertical", legend.box = "horizontal") +
+  guides(colour = guide_legend(title.position = "top"))
+  
+         
+
+  #add the continuous legend
+  history_map<- history_map + scale_fill_gradient(low="blue", high="red", 
+                      
+                      labs(fill = "Intensity"), labels =  c('low', 'high'),
+                      breaks = c(min(ggplot_build(history_map)$data[[2]]$level),
+                                 max(ggplot_build(history_map)$data[[2]]$level))) +
+  
+      ggtitle(paste('Historical Spike Areas: from ',
+                    as.character(start_date, format = "%m/%d/%Y"),
+                    ' to ',
+                    as.character(end_date, format = "%m/%d/%Y"), 
+                    sep = "")) +
+    theme(plot.title = element_text(size = 20, face = "bold"))
+      
+  
+  
+plot(history_map)
+
+```
+Figure 1: This is a heat map of the points in statistically significant (p<= 0.1) clusters identified between the two indicated dates. It shows the general areas where clusters tended to occur during this time period. 
+

@@ -1,0 +1,1165 @@
+---
+#Non-Fatal Opioid Overdose Clusters in Baltimore, MD
+#A cluster detection report for the Epidemiology Team
+
+
+header-includes:
+- \usepackage{fancyhdr}
+- \usepackage{lipsum}
+- \usepackage{makecell}
+- \usepackage{color}
+- \pagestyle{fancy}
+- \fancyhead[CO,CE]{$\color{red}{\text{\fontsize{20}{20} \selectfont FOR INTERNAL USE ONLY}}$ {\fontsize{20}{20} \selectfont Non-fatal Overdose Spike Alert, \today}}
+- \fancyfoot[CO,CE]{Prepared by Baltimore City Health Department (BCFD EMS Data Source)}
+- \fancyfoot[LE,RO]{\thepage}
+- \fancypagestyle{plain}{\pagestyle{fancy}}
+
+output:
+
+  pdf_document: default
+classoption: landscape
+geometry: margin=1.5cm
+
+
+---
+
+
+```{r main_code, include=FALSE, echo = FALSE, warning=FALSE, message=FALSE}
+# load necessary packages
+library(dplyr)
+library(rsatscan)
+library(ggplot2)
+library(raster)
+library(maptools)
+library(reshape2)
+library(zoo)
+library(rgdal)
+library(sp)
+library(ggmap) # import basemap
+library(lubridate)
+library(data.table)
+library(broom) # used instead of fortify to plot polygons in ggmap
+library(gridExtra) # plot multiple ggplots
+library(spatstat) # spatial intensity estimation
+library(scales) # for pretty scales for graduated circles
+library(RColorBrewer)
+library(maptools)
+library(rgeos)
+library(sf)
+library(sp)
+library(devtools)
+library(ggmap)
+library(leaflet)
+library(mapview)
+library(stats)
+library(gplots) # for the heatmap
+library(kableExtra) # extra table formatting
+library(surveillance)
+
+# set up the google API key for the basemap
+register_google(key = "YOUR GOOGLE API KEY")
+
+setwd("O:/Production/Workspace")
+
+# read in baltimore shapefile
+balt<- readOGR('O:/Production/Workspace/Reference Data/Baltimore_Census_Tracts_Project.shp')
+csa<- readOGR('O:/Production/Workspace/Reference Data/Vital_Signs_16_Census_Demographics.shp')
+
+# create the working directory for that specific date
+dir.create(paste("Epidemiology/Epi", Sys.Date(), sep = "_"))
+
+# read in the overdose data
+spike <- as.data.frame(st_read(dsn="O:/Opioid_Clusters/Geodatabase/Master.gdb"))
+
+
+# read baltimore coordinate data for the spatial intensity map
+coords<-read.csv('O:/Production/Workspace/Reference Data/baltimore_coordinates_feet.csv')
+coords<- coords[,2:3]
+coords <- as.matrix(coords)
+
+
+# subset only the columns you need
+narcan <- spike %>% dplyr::select(Date, Times___Arrived_on_Scene_Time,
+                                  Incident_Number, Incident_Address, Patient_Age, Patient_Gender,
+                                  Patient_Race__E6_12_, CT10, X, Y, name, 
+                                  POINT_X,
+                                  POINT_Y, CSA2010)
+narcan$long2<-narcan$POINT_X
+narcan$lat2<-narcan$POINT_Y
+narcan$POINT_X<-narcan$X
+narcan$POINT_Y<-narcan$Y
+
+# narcan date
+narcan$date <- as.Date(narcan$Date, format = '%m/%d/%Y')
+
+# remove narcan duplicates based on incident number, date, and census tract
+narc3<-narcan[!duplicated(narcan[,c(3, 8, 12)]),]
+
+# get the time in the correct format
+narc3$datetime <- paste(narc3$date, narc3$Times___Ar)
+
+# create unique IDs
+narc3$id <- 1:dim(narc3)[1]
+narc3$case <- 1
+narc3$lat <- narc3$POINT_Y
+narc3$long <- narc3$POINT_X
+
+# set ID as a factor
+narc3$ID <- as.factor(as.character(narc3$id))
+
+narc3 <- narc3 %>% filter(long != 0)
+
+# delete any outlier points
+narc3 <- narc3 %>% filter(narc3$POINT_X > 1393800 &
+                                    narc3$POINT_X < 1445600 &
+                                    narc3$POINT_Y > 557700 &
+                                    narc3$POINT_Y < 621470
+                                  
+)
+
+#####################################################################
+
+
+# set the cluster date
+start <- Sys.Date()-1
+
+# select only the relevant time period
+narc4 <- narc3 %>% filter(date >= start -30 & date <= start)
+
+# write the case file
+mycase <- narc4 %>% dplyr::select(id, case, date)
+
+# write the geo file
+mygeo <- narc4 %>% dplyr::select(id, lat, long)
+
+# set max cluster size in feet
+max_size <- 3960
+
+
+	# Surveillance Package for Timeseries Alert Detection ----------------------------------------------------
+
+      # Sets Variable for Last Two Years of Data
+      last_two<-as.numeric(format(Sys.Date(),"%Y"))-1
+    
+      # Import Non-fatal Overdose Data from the Master Geodatabase
+      surv_data<-as.data.frame(st_read(dsn="O:/Opioid_Clusters/Geodatabase/Master.gdb","Nonfatal"))
+    
+      # Date Fields and Formats
+      surv_data$RDate<- as.Date(surv_data$Date, "%m/%d/%Y")
+    
+      # Month, (Day), Week(can be done differently), Year
+      # see strftime
+      surv_data$month<-format(surv_data$RDate,"%m")
+      surv_data$year<-format(surv_data$RDate,"%Y")
+      surv_data$week<-format(surv_data$RDate,"%G")
+      surv_data$week<-format(surv_data$RDate,"%V") # Week of the year (01-53)
+      
+      # Week as numeric
+      surv_data$week<-as.numeric(surv_data$week)
+    
+      # Keep last two years of data
+      for_surv<-surv_data[which(surv_data$year>=last_two),]   
+    
+      # Deduplification criteria
+      for_surv2<-for_surv[!duplicated(for_surv[,c(14,41,35)]),]
+      # To find column numbers: which(colnames(for_surv)=="Incident_Number")
+        
+      # Collapse/aggregate by week
+      for_surv2$count<-1
+      for_surv2<-aggregate(count~week+year,data=for_surv2,sum)
+    
+      # Convert Data to STS Class
+      stsdata<-sts(for_surv2$count,start=c(last_two,1),frequency=52)
+    
+      # Run surveillance algorithm (EARS, C1, C2, or C3). help(earsC).
+      surv<-earsC(stsdata,control=list(range=NULL,method="C1",range="C1",alpha=0.05))
+
+
+
+
+
+# the function to run satscan and produce all the necessary figures and tables
+sat1 <- function(mycase, mygeo, start, max_size){
+  
+  
+  # save working directory
+  td <- setwd("O:/Production/satscan_wd")
+  
+
+  # get the end date in the right format
+  end_date<-gsub('-', '/', as.character(start))
+  start_date<-gsub('-', '/', as.character(min(narc4$date)))
+  
+  
+  write.cas(mycase, location = td, file = "mycas")
+  write.geo(mygeo, location = td, file = "mygeo", userownames=FALSE)
+  
+  
+  # reset the parameter file
+   invisible(ss.options(reset=TRUE))
+  
+  # build the parameter file
+  ss.options(list(
+    CaseFile="mycas.cas", 
+    CoordinatesFile='mygeo.geo',
+    StartDate=start_date, EndDate=end_date,
+    CoordinatesType=1,
+    PrecisionCaseTimes=3,
+    AnalysisType=4, ModelType=2,
+    ScanAreas=1, TimeAggregationUnits=3, 
+    TimeAggregationLength=1,
+    
+    MonteCarloReps=999,
+    
+    OutputShapefiles='y',
+    MostLikelyClusterEachCentroidASCII='y',
+    ReportGiniClusters='n',
+
+    
+    # set temporal window
+    MaxTemporalSizeInterpretation=1,
+    MaxTemporalSize=7,
+    
+    # cartesian coordinates
+    CoordinatesType=0,
+    
+    # maximum circle size
+    UseDistanceFromCenterOption='y',
+    
+    # maximum spatial windown
+    MaxSpatialSizeInDistanceFromCenter=max_size
+
+
+  ))
+  
+  
+  # write the parameter file               
+  write.ss.prm(td, "opi_days")
+  
+  # run satscan (Indiciate the location of SaTScan on the computer)
+  opi_out = satscan(td, "opi_days", sslocation="C:/Program Files/SaTScan", verbose = F)
+  
+  
+  # label the monitors in the cluster
+  cluster_locs<- opi_out$gis %>% dplyr::select(CLUSTER, LOC_ID, LOC_OBS)
+  names(cluster_locs)<- c('CLUSTER', 'ID', 'LOC_OBS')
+  
+  narc4_out<- left_join(narc4, cluster_locs, by = "ID")
+  
+  
+  # get the cluster time lables
+  cols<-opi_out$col
+  
+  # select only those below 0.4
+  cols<-cols[cols$P_VALUE <= 0.4,]
+  
+  # Cluster must have at least 3 cases.
+  cols<-cols[cols$OBSERVED>=3,]
+
+   # Export cluster to historical cluster folder
+  
+  # Read-in Historical cluster .csv.
+  historical<-read.csv("O:/Production/Historical/Historical_Clusters.csv",header = TRUE,sep=",")
+  
+    # Append new and old clusters together, and export to folder.
+     hist_clusters<-rbind(historical,cols)
+     
+     # Drops NA row
+     hist_clusters<-hist_clusters[!is.na(hist_clusters$CLUSTER),]
+     
+     # Writes appended file
+     write.csv(hist_clusters,"O:/Production/Historical/Historical_Clusters.csv",row.names=FALSE)
+  
+  
+  # map only the significant clusters
+  narc4_out$CLUSTER[!narc4_out$CLUSTER %in% c(cols$CLUSTER, NA)]<-NA
+  
+  # get the NA to be 0 in Clusters
+  narc4_out$CLUSTER[is.na(narc4_out$CLUSTER)]<-0
+
+  
+  
+  # if there are no clusters, plot the empty map
+  
+  if(dim(cols)[1]==0){
+    narc4_out$CLUSTER2 <- narc4_out$CLUSTER
+    
+    cols1b<- cols[1:14]
+    names(cols1b)<- c("Cluster", "Start of\nSpike",
+                         "End of\nSpike",
+                         "Observed\nOverdoses\nin last\n30 days",
+                         "P-value",
+                         "Observed\nin cluster","Expected\nin cluster",
+                         "Baltimore\nTotal\nduring\ncluster",
+                         "Cluster\nAge",
+               "All\nAge",
+               "Cluster\nMale\nPercent",
+               "All\nMale\nPercent",
+               "Cluster\nBlack\nPercent",
+               "All\nBlack\nPercent")
+    
+    zoom_map <- 'NO SIGNIFICANT CLUSTERS HAVE BEEN IDENTIFIED'
+    
+        
+       # # get cases by date
+       narc5 <- narc4 %>% group_by(date) %>% summarise(
+         case = n())
+       
+  # time series plot
+  time<- ggplot(narc5, aes(date, case)) + geom_line() + 
+         ggtitle(paste(' Number of Non-fatal Overdoses in Baltimore City (', sum(narc5$case),
+                       ' total in the last 30 days)', sep = '')) +
+         labs(x = 'Time', y = 'Number of Overdoses') +
+         scale_y_continuous(limits = c(0, (max(narc5$case)+3)), breaks = seq(0, (max(narc5$case)+3), by = 5)) + 
+         
+         # add red dot at end
+         geom_point(aes(x=max(narc5$date),
+                        y=narc5$case[narc5$date == max(narc5$date)]),
+                    size = 2, color = 'red')
+       
+  # map of the intenisty and clusters    
+  intense_map <- ggplot(narc4_out,aes(x=POINT_X,y=POINT_Y)) +
+                 geom_polygon(data = broom::tidy(balt), aes(long, lat, group = group),
+                 fill = NA, color = 'black', show.legend = F) + 
+  
+                # the continuous scale
+                stat_density2d(aes(fill=..level.., alpha = 0.5), geom="polygon", h = 5280, show.legend = T) +
+
+                # don't plot the alpha legend
+                guides(alpha = F, fill = guide_colourbar(barwidth = 1, barheight = 4.7,
+                              ticks = FALSE, title.theme = element_text(face='plain'))) +
+  
+  
+                # plot some hidden points to get the p-value cutoffs
+                geom_point(aes(x=POINT_X, y=POINT_Y, color = as.character(1:4), shape = NA), data=narc4_out[1:4,]) +
+  
+
+                #  make the legend for it
+                scale_colour_manual(name = 'Significance', 
+                      values =c('red','tomato', 'orange', 'yellow'),
+                      labels = c('<0.01','0.01-0.049','0.05-0.09','>=0.1')) + 
+  
+                theme_void() +
+  
+                # coordinate alignment so it doesn't look flat
+                coord_equal(ratio=1) +  
+  
+               # postion the legend appropraitely
+                theme(legend.position = c(0.2, 0.2), legend.direction = "vertical", legend.box = "horizontal") +
+                guides(colour = guide_legend(title.position = "top")) 
+         
+
+              # add the continuous legend to the spatial intensity map
+                intense_map<- intense_map + scale_fill_gradient(low="blue", high="yellow", 
+                      
+                      labs(fill = "Intensity"), labels =  c('low', 'high'),
+                      breaks = c(min(ggplot_build(intense_map)$data[[2]]$level),
+                                 max(ggplot_build(intense_map)$data[[2]]$level))) +
+    
+                ggtitle('Figure 1A: Non-Fatal Overdose Spatial Intensity')
+  
+     # graduated circle map
+     
+     # get the balt data into tidy format
+     baltf<- broom::tidy(balt, region = 'GEOID')
+     baltf$GEOID<- baltf$id
+     
+     # get the overdose points as spatalpointsdataframe
+     p<- SpatialPointsDataFrame(coords = cbind(narc4_out$POINT_X, narc4_out$POINT_Y), narc4_out)
+     
+     # get them into the same projection
+     proj4string(p) = proj4string(balt)
+     proj4string(balt)
+     
+     #overlay one with another
+     a<-over(p, balt)
+     
+     b<-as.data.frame(table(a$GEOID))
+     names(b)<- c('GEOID', 'Freq')
+     
+     # join the overdoes frequency data with baltf2 data
+     baltf2<- left_join(baltf, b, by = 'GEOID')
+     
+     centroid <- balt@data
+     centroid$X <-coordinates(balt)[,1]
+     centroid$Y <-coordinates(balt)[,2]
+     
+     # add the count data to the centroid dataset
+     centroid<- left_join(centroid, b, by = 'GEOID')
+  
+     # print the graduated circle map
+     circle_map <- ggplot() +
+       
+       geom_polygon(data = broom::tidy(balt), aes(long, lat, group = group),
+                    fill = NA, color = 'black') + 
+       
+       theme_classic() + 
+       
+       geom_point(data=centroid, aes(x=X, y=Y, size=Freq, fill=Freq), shape=21, alpha=0.8) +
+       scale_size_continuous(range = c(1, 6), breaks=pretty_breaks(6)) +
+       scale_fill_distiller(palette = 'BuPu', breaks = pretty_breaks(6), direction = 1) + 
+       
+       ggtitle('Non-Fatal Cases with Graduated Circles (Past 30 Days)', max(narc4$date)) +
+       theme_void() +
+       coord_equal(ratio=1)
+     
+    #add an empty csa_tab variable
+    csa_tab <- as.data.frame(matrix(NA,1, 3))
+    
+    # combine all the output in a list
+    list1<-list(zoom_map, cols1b, intense_map, time, circle_map, csa_tab)
+       
+    # put it in the final list
+    fin_list<-list()
+    fin_list[[1]]<-list1
+       
+       
+  } else{
+    
+  
+
+  
+# if any clusters have been identified
+if(dim(cols)[1]>0){
+    
+  # resolve conflict when two overdoses that happened at the same address were giving NA in the gis output
+  for (i in 1:dim(cols)[1]){
+  narc4_out$LOC_OBS[narc4_out$CLUSTER == i & narc4_out$date >= as.Date(cols[i,]$START_DATE) &
+  narc4_out$date <=  as.Date(cols[i,]$END_DATE)]<-1
+  cols$NUMBER_LOC[i] <- length(narc4_out$LOC_OBS[narc4_out$CLUSTER == i])
+  }
+  
+  narc4_out$LOC_OBS[is.na(narc4_out$LOC_OBS)]<-0
+  narc4_out$CLUSTER2 <- narc4_out$CLUSTER
+  narc4_out$CLUSTER2[narc4_out$LOC_OBS != 1] <-0
+    
+
+  # get all the cases that happened in the entire area during that time period
+  cols$balt_total <- 0
+  for( i in 1:dim(cols)[1]){
+      
+  narc5<- narc4_out %>% filter(date >= as.Date(as.character(cols$START_DATE))[i] &
+                                     date <= as.Date(as.character(cols$END_DATE))[i])
+  cols$balt_total[i]<-dim(narc5)[1]
+      
+  }
+
+}
+  
+
+# make the approriate transformations for the zoomed in  cluster maps
+     
+     # get the coordinates of clusters as spatialpointsdataframe
+     center1<-SpatialPointsDataFrame(coords = cbind(cols$Y, cols$X), cols)
+     proj4string(center1) = proj4string(balt)
+     
+     # add buffers of the appropriate radius
+     center2_buff <- gBuffer(center1, width = cols$RADIUS, byid = TRUE)
+     
+     # project resulting clusters into WGS84
+     center2_buff2<- spTransform(center2_buff, CRS("+init=epsg:4326"))  
+  
+     # create a final list for the for loop output
+     fin_list<-list()
+     
+
+     # for loop that goes through each cluster
+     for(i in 1:max(narc4_out$CLUSTER2)){
+       
+       narc_clust<- narc4_out %>% filter(CLUSTER2 == i)
+ 
+       
+       # select the appropriate cluster (lat long)
+       c2<-center2_buff2[center2_buff2$CLUSTER == i,]
+       
+       # select the appropriate cluster NAD83
+       c2_nad83<-center2_buff[center2_buff$CLUSTER == i,]
+       
+       
+       
+       # establish zoom value
+       zoom1<-0
+       if(cols$RADIUS[i] > 4500){
+         zoom1<-13
+       }else if (cols$RADIUS[i] <= 4500 & cols$RADIUS[i] > 2500){
+         zoom1<-14
+       }else{
+         zoom1<-15
+       }
+       
+       # Select color type
+       color1 = 'red'
+        if(cols[i,]$P_VALUE<=0.01){
+          color1 = 'red'
+        }else if(cols[i,]$P_VALUE>0.01 & cols[i,]$P_VALUE<=0.05){
+          color1 = 'tomato'
+        }else if(cols[i,]$P_VALUE>0.05 & cols[i,]$P_VALUE<=0.1){
+          color1 = 'orange'
+        }else if(cols[i,]$P_VALUE>0.1){
+          color1 = 'yellow'
+        }
+
+      # add the basemap 
+      basemap <- get_map(location = c(lon = coordinates(c2)[1],
+                                       lat = coordinates(c2)[2]),
+                          color = "color", # or bw
+                          source = "google",
+                          maptype = "terrain",
+                          zoom = zoom1)
+       
+       # make the basemap ggmap
+       basemap <- ggmap(basemap)
+       
+       # make the zoomed map
+       zoom_map <- basemap +
+         
+         geom_polygon(data = broom::tidy(c2), aes(x=long, y=lat, group = group),
+                      fill = NA, color = color1, size = 2) +
+         
+         geom_point(data = narc_clust, aes(x=long2, y = lat2)) +
+         
+         ggtitle(paste('Figure 1B: Non-Fatal Overdose Spike', i, sep = " "))+ theme_void() 
+ 
+       
+
+
+    # select the cols with appropriate demographic information  
+     cols1<-cols %>% filter(CLUSTER == i)
+     cols2 <- cols1 %>% dplyr::select(CLUSTER, START_DATE, END_DATE, NUMBER_LOC, P_VALUE, OBSERVED, EXPECTED, ODE, balt_total)
+     cols2$P_VALUE <- round(cols2$P_VALUE, digits = 3)
+  
+     cols2$EXPECTED <- round(cols2$EXPECTED, digits = 3)
+  
+     cols2$ODE <- round(cols2$ODE, digits = 2)
+
+
+    # get the demographic proportions overall in the last month
+     all_race<-round(as.numeric(sum(narc4_out$Patient_Ra == 'B')/dim(narc4_out)[1])*100, digits = 1)
+     all_gender<-round(as.numeric(sum(narc4_out$Patient_Gender == 'M')/dim(narc4_out)[1])*100, digits = 1)
+     all_age<-round(mean(narc4_out$Patient_Ag, na.rm = TRUE), digits = 1)
+
+     # get the output table
+     cols3<- data.frame(matrix(NA, nrow = dim(cols2)[1], ncol = 15))
+
+
+     cols3$start_date<- as.Date('2000-01-01')
+     cols3$end_date<- as.Date('2000-01-01')
+
+      # find the demographic values in the cluster
+     clust <- narc4_out %>% filter(CLUSTER == i)
+
+     clust_race<-round(as.numeric(sum(clust$Patient_Ra == 'B')/dim(clust)[1])*100, digits = 1)
+     clust_gender<-round(as.numeric(sum(clust$Patient_Gender == 'M')/dim(clust)[1])*100, digits = 1)
+     clust_age<-round(mean(clust$Patient_Age, na.rm = TRUE), digits = 1)
+
+
+
+     cols3<-cbind(cols2, clust_age, all_age, clust_gender, all_gender, clust_race, all_race)
+           names(cols3)<-   c("clust", "start_date", "end_date", "num_loc","p_value",
+                        "obs", "exp", "ode", 'balt_total', "clust_age", "all_age",
+                        "clust_gender", "all_gender", "clust_race", "all_race")
+
+     cols3<-cols3 %>% dplyr::select(-ode)
+
+    # Deterine which CSA the cluster overlaps with
+    # get the points intersection
+    narc_clust2<- narc_clust
+    coordinates(narc_clust2)<- ~long+lat
+    proj4string(narc_clust2) <- CRS(proj4string(csa))
+    
+    over1 <- over(narc_clust2, csa)
+
+    csa_tab <- over1 %>% group_by(CSA2010) %>% summarise(
+      total = n(),
+      percent = round(n()/dim(over1)[1]*100, digits =1)
+      
+    )
+    
+    csa_tab <- as.data.frame(csa_tab)
+    
+  
+    # map of the intenisty and clusters if any clusters were identified
+    intense_map <- ggplot(narc4_out,aes(x=POINT_X,y=POINT_Y)) +
+    # plot Baltimore
+    geom_polygon(data = broom::tidy(balt), aes(long, lat, group = group),
+                 fill = NA, color = 'black', show.legend = F) + 
+    
+    # the continuous scale
+    stat_density2d(aes(fill=..level.., alpha = 0.5), geom="polygon", h = 5280, show.legend = T) +
+  
+    guides(alpha = F, fill = guide_colourbar(barwidth = 1, barheight = 4.7,
+                                ticks = FALSE, title.theme = element_text(face='plain'))) +
+    
+    # plot the cluster
+    geom_polygon(data = broom::tidy(c2_nad83), aes(x=long, y=lat, group = group),
+                 fill = NA, color = color1, size = 1, show.legend = F) + 
+    
+    # plot some invisible points to get the p-value cutoffs
+    geom_point(aes(x=POINT_X, y=POINT_Y, color = as.character(1:4), shape = NA), data=narc4_out[1:4,]) +
+    
+    #  make the legend for it
+    scale_colour_manual(name = 'Significance', 
+                        values =c('red','tomato', 'orange', 'yellow'),
+                        labels = c('<0.01','0.01-0.049','0.05-0.09','>=0.1')) + 
+    
+    theme_void() +
+    
+    # coordinate alignment so it doesn't look flat
+    coord_equal(ratio=1) +  
+    
+    # postion the legend appropraitely
+    theme(legend.position = c(0.2, 0.2), legend.direction = "vertical", legend.box = "horizontal") +
+    guides(colour = guide_legend(title.position = "top"))
+           
+
+    #add the continuous legend
+    intense_map<- intense_map + scale_fill_gradient(low="blue", high="yellow", 
+                      
+                      labs(fill = "Intensity"), labels =  c('low', 'high'),
+                      breaks = c(min(ggplot_build(intense_map)$data[[2]]$level),
+                                 max(ggplot_build(intense_map)$data[[2]]$level))) +
+    
+                ggtitle('Figure 1A: Non-Fatal Overdose Spatial Intensity')
+      
+     
+
+  
+     # graduated circle map
+     
+     # get the balt data into tidy format
+     baltf<- broom::tidy(balt, region = 'GEOID')
+     baltf$GEOID<- baltf$id
+     
+     # get the overdose points as spatalpointsdataframe
+     p<- SpatialPointsDataFrame(coords = cbind(narc4_out$POINT_X, narc4_out$POINT_Y), narc4_out)
+     
+     # get them into the same projection
+     proj4string(p) = proj4string(balt)
+     proj4string(balt)
+     
+     #overlay one with another
+     a<-over(p, balt)
+     
+     b<-as.data.frame(table(a$GEOID))
+     names(b)<- c('GEOID', 'Freq')
+     
+     # join the overdoes frequency data with baltf2 data
+     baltf2<- left_join(baltf, b, by = 'GEOID')
+     
+     centroid <- balt@data
+     centroid$X <-coordinates(balt)[,1]
+     centroid$Y <-coordinates(balt)[,2]
+     
+     # add the count data to the centroid dataset
+     centroid<- left_join(centroid, b, by = 'GEOID')
+       
+     
+     circle_map <- ggplot() +
+       
+       geom_polygon(data = broom::tidy(balt), aes(long, lat, group = group),
+                    fill = NA, color = 'black') + 
+       
+       theme_classic() + 
+       
+       geom_point(data=centroid, aes(x=X, y=Y, size=Freq, fill=Freq), shape=21, alpha=0.8) +
+       scale_size_continuous(range = c(1, 6), breaks=pretty_breaks(6)) +
+       scale_fill_distiller(palette = 'BuPu', breaks = pretty_breaks(6), direction = 1) + 
+       
+       ggtitle('Non-Fatal Cases with Graduated Circles (Past 30 Days)', max(narc4$date)) +
+       theme_void() +
+       coord_equal(ratio=1)
+     
+
+       # get cases by date
+       narc5 <- narc4 %>% group_by(date) %>% summarise(
+         case = n())
+       
+       # ggplot the time series
+       time<-ggplot(narc5, aes(date, case)) + geom_line() + 
+         ggtitle(paste(max(narc4$date), ' Non-Fatal Overdoses over Time (', sum(narc5$case),' total in the last 30 days)',
+         sep = '')) +
+         labs(x = 'Time', y = 'Overdoses') + 
+         # add red dot at end
+         geom_point(aes(x=max(narc5$date),
+                        y=narc5$case[narc5$date == max(narc5$date)]),
+                    size = 2, color = 'red')
+       
+
+       list1<-list(zoom_map, cols3, intense_map, time, circle_map, csa_tab)
+       
+
+       # put it in the final list
+       fin_list[[i]]<-list1
+      
+     } 
+   }
+    return(fin_list)
+}
+
+
+```
+
+
+
+```{r run_func, results = 'asis', echo=FALSE, warning=FALSE, message=FALSE}
+
+# run the satscan function
+out<- sat1(mycase, mygeo, start, max_size)
+
+# consider up to ten clusters identified in one day
+e1<-length(out)>=1
+e2<-length(out)>=2
+e3<-length(out)>=3
+e4<-length(out)>=4
+e5<-length(out)>=5
+e6<-length(out)>=6
+e7<-length(out)>=7
+e8<-length(out)>=8
+e9<-length(out)>=9
+e10<-length(out)>=10
+
+```
+
+
+
+\newpage
+```{r plot1, results = 'asis', echo=FALSE, warning=FALSE, message=FALSE, fig.show='hold', fig.height=5, fig.width=5, eval = e1}
+# print the tables and figures for the report
+
+# cluster 1
+# summary table
+out[[1]][[2]] %>%
+ 
+      kable('markdown',booktabs = T, escape = F,
+col.names = linebreak(c("Cluster", "Start of\nSpike",
+                        "End of\nSpike",
+                        "Observed\nOverdoses\nin last\n30 days",
+                        "P-value",
+                        "Observed\nin cluster","Expected\nin cluster",
+                        "Baltimore\nTotal\nduring\ncluster",
+                        "Cluster\nAge",
+              "All\nAge",
+              "Cluster\nMale\nPercent",
+              "All\nMale\nPercent",
+              "Cluster\nBlack\nPercent",
+              "All\nBlack\nPercent"), align = 'c')) %>%
+column_spec(1:14, width = "1.5cm")
+
+
+par(mfrow=c(1,2))
+# heat map
+out[[1]][[3]]
+
+# zoomed in map
+out[[1]][[1]]
+
+```
+
+```{r plot1b, results = 'asis', echo=FALSE, warning=FALSE, message=FALSE, fig.show='hold', fig.height=5, fig.width=5, eval = e1}
+# a table of cluster and CSA relationship
+out[[1]][[6]] %>%       kable('markdown',booktabs = T, escape = F,
+col.names = linebreak(c("CSA", "Total Cluster\nOverdoses",
+                        "Percent of Cluster\nOverdoses"), align = 'c')) %>%
+column_spec(1:14, width = "1.5cm")
+```
+
+
+\newpage
+```{r plot2, results = 'asis', echo=FALSE, warning=FALSE, message=FALSE, fig.show='hold', fig.height=5, fig.width=5, eval = e2}
+# cluster 2
+# summary table
+out[[2]][[2]] %>%
+      
+      kable('markdown',booktabs = T, escape = F,
+col.names = linebreak(c("Cluster", "Start of\nSpike",
+                        "End of\nSpike",
+                        "Observed\nOverdoses\nin last\n30 days",
+                        "P-value",
+                        "Observed\nin cluster","Expected\nin cluster",
+                        "Baltimore\nTotal\nduring\ncluster",
+                        "Cluster\nAge",
+              "All\nAge",
+              "Cluster\nMale\nPercent",
+              "All\nMale\nPercent",
+              "Cluster\nBlack\nPercent",
+              "All\nBlack\nPercent"), align = 'c')) %>%
+column_spec(1:14, width = "1.5cm")
+# heat map
+
+par(mfrow=c(1,2))
+out[[2]][[3]]
+
+# zoomed in
+out[[2]][[1]]
+
+```
+
+```{r plot2b, results = 'asis', echo=FALSE, warning=FALSE, message=FALSE, fig.show='hold', fig.height=5, fig.width=5, eval = e2}
+out[[2]][[6]] %>%       kable('markdown',booktabs = T, escape = F,
+col.names = linebreak(c("CSA", "Total Cluster\nOverdoses",
+                        "Percent of Cluster\nOverdoses"), align = 'c')) %>%
+column_spec(1:14, width = "1.5cm")
+```
+
+
+\newpage
+```{r plot3, results = 'asis', echo=FALSE, warning=FALSE, message=FALSE, fig.show='hold', fig.height=5, fig.width=5, eval = e3}
+# cluster 3
+# summary table
+out[[3]][[2]] %>%
+
+      
+      kable('markdown',booktabs = T, escape = F,
+col.names = linebreak(c("Cluster", "Start of\nSpike",
+                        "End of\nSpike",
+                        "Observed\nOverdoses\nin last\n30 days",
+                        "P-value",
+                        "Observed\nin cluster","Expected\nin cluster",
+                        "Baltimore\nTotal\nduring\ncluster",
+                        "Cluster\nAge",
+              "All\nAge",
+              "Cluster\nMale\nPercent",
+              "All\nMale\nPercent",
+              "Cluster\nBlack\nPercent",
+              "All\nBlack\nPercent"), align = 'c')) %>%
+column_spec(1:14, width = "1.5cm")
+
+par(mfrow=c(1,2))
+# heat map
+out[[3]][[3]]
+# zoomed in
+out[[3]][[1]]
+```
+
+```{r plot3b, results = 'asis', echo=FALSE, warning=FALSE, message=FALSE, fig.show='hold', fig.height=5, fig.width=5, eval = e3}
+out[[3]][[6]] %>%       kable('markdown',booktabs = T, escape = F,
+col.names = linebreak(c("CSA", "Total Cluster\nOverdoses",
+                        "Percent of Cluster\nOverdoses"), align = 'c')) %>%
+column_spec(1:14, width = "1.5cm")
+```
+
+
+\newpage
+```{r plot4, results = 'asis', echo=FALSE, warning=FALSE, message=FALSE, fig.show='hold', fig.height=5, fig.width=5, eval = e4}
+
+# cluster 4
+# summary table
+out[[4]][[2]] %>%
+
+      kable('markdown',booktabs = T, escape = F,
+col.names = linebreak(c("Cluster", "Start of\nSpike",
+                        "End of\nSpike",
+                        "Observed\nOverdoses\nin last\n30 days",
+                        "P-value",
+                        "Observed\nin cluster","Expected\nin cluster",
+                        "Baltimore\nTotal\nduring\ncluster",
+                        "Cluster\nAge",
+              "All\nAge",
+              "Cluster\nMale\nPercent",
+              "All\nMale\nPercent",
+              "Cluster\nBlack\nPercent",
+              "All\nBlack\nPercent"), align = 'c')) %>%
+column_spec(1:14, width = "1.5cm")
+
+par(mfrow=c(1,2))
+# heat map
+out[[4]][[3]]
+# zoomed in
+out[[4]][[1]]
+
+```
+```{r plot4b, results = 'asis', echo=FALSE, warning=FALSE, message=FALSE, fig.show='hold', fig.height=5, fig.width=5, eval = e4}
+out[[4]][[6]] %>%       kable('markdown',booktabs = T, escape = F,
+col.names = linebreak(c("CSA", "Total Cluster\nOverdoses",
+                        "Percent of Cluster\nOverdoses"), align = 'c')) %>%
+column_spec(1:14, width = "1.5cm")
+```
+
+
+
+\newpage
+```{r plot5, results = 'asis', echo=FALSE, warning=FALSE, message=FALSE, fig.show='hold', fig.height=5, fig.width=5, eval = e5}
+# cluster 5
+# summary table
+out[[5]][[2]] %>%
+
+      kable('markdown',booktabs = T, escape = F,
+col.names = linebreak(c("Cluster", "Start of\nSpike",
+                        "End of\nSpike",
+                        "Observed\nOverdoses\nin last\n30 days",
+                        "P-value",
+                        "Observed\nin cluster","Expected\nin cluster",
+                        "Baltimore\nTotal\nduring\ncluster",
+                        "Cluster\nAge",
+              "All\nAge",
+              "Cluster\nMale\nPercent",
+              "All\nMale\nPercent",
+              "Cluster\nBlack\nPercent",
+              "All\nBlack\nPercent"), align = 'c')) %>%
+column_spec(1:14, width = "1.5cm")
+
+par(mfrow=c(1,2))
+# heat map
+out[[5]][[3]]
+# zoomed in
+out[[5]][[1]]
+
+```
+```{r plot5b, results = 'asis', echo=FALSE, warning=FALSE, message=FALSE, fig.show='hold', fig.height=5, fig.width=5, eval = e5}
+out[[5]][[6]] %>%       kable('markdown',booktabs = T, escape = F,
+col.names = linebreak(c("CSA", "Total Cluster\nOverdoses",
+                        "Percent of Cluster\nOverdoses"), align = 'c')) %>%
+column_spec(1:14, width = "1.5cm")
+```
+
+\newpage
+```{r plot6, results = 'asis', echo=FALSE, warning=FALSE, message=FALSE, fig.show='hold', fig.height=5, fig.width=5, eval = e6}
+
+# cluster 6
+# summary table
+out[[6]][[2]] %>%
+      
+      kable('markdown',booktabs = T, escape = F,
+col.names = linebreak(c("Cluster", "Start of\nSpike",
+                        "End of\nSpike",
+                        "Observed\nOverdoses\nin last\n30 days",
+                        "P-value",
+                        "Observed\nin cluster","Expected\nin cluster",
+                        "Baltimore\nTotal\nduring\ncluster",
+                        "Cluster\nAge",
+              "All\nAge",
+              "Cluster\nMale\nPercent",
+              "All\nMale\nPercent",
+              "Cluster\nBlack\nPercent",
+              "All\nBlack\nPercent"), align = 'c')) %>%
+column_spec(1:14, width = "1.5cm")
+par(mfrow=c(1,2))
+# heat map
+out[[6]][[3]]
+# zoomed in
+out[[6]][[1]]
+
+```
+
+```{r plot6b, results = 'asis', echo=FALSE, warning=FALSE, message=FALSE, fig.show='hold', fig.height=5, fig.width=5, eval = e6}
+out[[6]][[6]] %>%       kable('markdown',booktabs = T, escape = F,
+col.names = linebreak(c("CSA", "Total Cluster\nOverdoses",
+                        "Percent of Cluster\nOverdoses"), align = 'c')) %>%
+column_spec(1:14, width = "1.5cm")
+```
+
+\newpage
+```{r plot7, results = 'asis', echo=FALSE, warning=FALSE, message=FALSE, fig.show='hold', fig.height=5, fig.width=5, eval = e7}
+
+# cluster 7
+# summary table
+out[[7]][[2]] %>%
+      
+      kable('markdown',booktabs = T, escape = F,
+col.names = linebreak(c("Cluster", "Start of\nSpike",
+                        "End of\nSpike",
+                        "Observed\nOverdoses\nin last\n30 days",
+                        "P-value",
+                        "Observed\nin cluster","Expected\nin cluster",
+                        "Baltimore\nTotal\nduring\ncluster",
+                        "Cluster\nAge",
+              "All\nAge",
+              "Cluster\nMale\nPercent",
+              "All\nMale\nPercent",
+              "Cluster\nBlack\nPercent",
+              "All\nBlack\nPercent"), align = 'c')) %>%
+column_spec(1:14, width = "1.5cm")
+
+par(mfrow=c(1,2))
+# heat map
+out[[7]][[3]]
+# zoomed in
+out[[7]][[1]]
+
+```
+```{r plot7b, results = 'asis', echo=FALSE, warning=FALSE, message=FALSE, fig.show='hold', fig.height=5, fig.width=5, eval = e7}
+out[[7]][[6]] %>%       kable('markdown',booktabs = T, escape = F,
+col.names = linebreak(c("CSA", "Total Cluster\nOverdoses",
+                        "Percent of Cluster\nOverdoses"), align = 'c')) %>%
+column_spec(1:14, width = "1.5cm")
+```
+
+\newpage
+```{r plot8, results = 'asis', echo=FALSE, warning=FALSE, message=FALSE, fig.show='hold', fig.height=5, fig.width=5, eval = e8}
+# cluster 8
+# summary table
+out[[8]][[2]] %>%
+
+      kable('markdown',booktabs = T, escape = F,
+col.names = linebreak(c("Cluster", "Start of\nSpike",
+                        "End of\nSpike",
+                        "Observed\nOverdoses\nin last\n30 days",
+                        "P-value",
+                        "Observed\nin cluster","Expected\nin cluster",
+                        "Baltimore\nTotal\nduring\ncluster",
+                        "Cluster\nAge",
+              "All\nAge",
+              "Cluster\nMale\nPercent",
+              "All\nMale\nPercent",
+              "Cluster\nBlack\nPercent",
+              "All\nBlack\nPercent"), align = 'c')) %>%
+column_spec(1:14, width = "1.5cm")
+
+par(mfrow=c(1,2))
+# heat map
+out[[8]][[3]]
+# zoomed in
+out[[8]][[1]]
+
+```
+```{r plot8b, results = 'asis', echo=FALSE, warning=FALSE, message=FALSE, fig.show='hold', fig.height=5, fig.width=5, eval = e8}
+out[[8]][[6]] %>%       kable('markdown',booktabs = T, escape = F,
+col.names = linebreak(c("CSA", "Total Cluster\nOverdoses",
+                        "Percent of Cluster\nOverdoses"), align = 'c')) %>%
+column_spec(1:14, width = "1.5cm")
+```
+
+\newpage
+```{r plot9, results = 'asis', echo=FALSE, warning=FALSE, message=FALSE, fig.show='hold', fig.height=5, fig.width=5, eval = e9}
+# cluster 9
+# summary table
+out[[9]][[2]] %>%
+      
+      kable('markdown',booktabs = T, escape = F,
+col.names = linebreak(c("Cluster", "Start of\nSpike",
+                        "End of\nSpike",
+                        "Observed\nOverdoses\nin last\n30 days",
+                        "P-value",
+                        "Observed\nin cluster","Expected\nin cluster",
+                        "Baltimore\nTotal\nduring\ncluster",
+                        "Cluster\nAge",
+              "All\nAge",
+              "Cluster\nMale\nPercent",
+              "All\nMale\nPercent",
+              "Cluster\nBlack\nPercent",
+              "All\nBlack\nPercent"), align = 'c')) %>%
+column_spec(1:14, width = "1.5cm")
+
+par(mfrow=c(1,2))
+# heat map
+out[[9]][[3]]
+# zoomed in
+out[[9]][[1]]
+
+```
+```{r plot9b, results = 'asis', echo=FALSE, warning=FALSE, message=FALSE, fig.show='hold', fig.height=5, fig.width=5, eval = e9}
+out[[9]][[6]] %>%       kable('markdown',booktabs = T, escape = F,
+col.names = linebreak(c("CSA", "Total Cluster\nOverdoses",
+                        "Percent of Cluster\nOverdoses"), align = 'c')) %>%
+column_spec(1:14, width = "1.5cm")
+```
+
+\newpage
+```{r plot10, results = 'asis', echo=FALSE, warning=FALSE, message=FALSE, fig.show='hold', fig.height=5, fig.width=5, eval = e10}
+# cluster 10
+# summary table
+out[[10]][[2]] %>%
+      
+      kable('markdown',booktabs = T, escape = F,
+col.names = linebreak(c("Cluster", "Start of\nSpike",
+                        "End of\nSpike",
+                        "Observed\nOverdoses\nin last\n30 days",
+                        "P-value",
+                        "Observed\nin cluster","Expected\nin cluster",
+                        "Baltimore\nTotal\nduring\ncluster",
+                        "Cluster\nAge",
+              "All\nAge",
+              "Cluster\nMale\nPercent",
+              "All\nMale\nPercent",
+              "Cluster\nBlack\nPercent",
+              "All\nBlack\nPercent"), align = 'c')) %>%
+column_spec(1:14, width = "1.5cm")
+
+par(mfrow=c(1,2))
+# heat map
+out[[10]][[3]]
+# zoomed in
+out[[10]][[1]]
+
+```
+
+```{r plot10b, results = 'asis', echo=FALSE, warning=FALSE, message=FALSE, fig.show='hold', fig.height=5, fig.width=5, eval = e10}
+# table showing clusters per CSA
+out[[10]][[6]] %>%       kable('markdown',booktabs = T, escape = F,
+col.names = linebreak(c("CSA", "Total Cluster\nOverdoses",
+                        "Percent of Cluster\nOverdoses"), align = 'c')) %>%
+column_spec(1:14, width = "1.5cm")
+```
+
+\newpage
+```{r timeplot, results = 'asis', echo=FALSE, warning=FALSE, message=FALSE, fig.show='hold', fig.height=8, fig.width=10}
+# time series plot 1
+out[[1]][[4]]
+```
+
+\newpage
+```{r timeplot2, results = 'asis', echo=FALSE, warning=FALSE, message=FALSE, fig.show='hold', fig.height=10, fig.width=15}
+# time series plot 2
+
+plot(surv,main="Non-fatal Overdose: Weekly Temporal Alerts",ylab="Number of Non-fatal Overdoses",legend.opts=list(x="topright"))
+
+```
+
+\newpage
+```{r circlemap, results = 'asis', echo=FALSE, warning=FALSE, message=FALSE, fig.height=7, fig.width=7}
+out[[1]][[5]]
+```
+
+\newpage
+
+```{r heatmap, results = 'asis', echo=FALSE, warning=FALSE, message=FALSE, fig.height=12, fig.width=10, fig.cap="Non-fatal Overdose Heatmap by CSA in Baltimore City"}
+# make the heatmap table summarizing overdoses by CSA and month
+
+# create year variable
+narc3$Year<-as.numeric(format(narc3$date, "%Y"))
+# create month variable
+narc3$month<-as.numeric(format(narc3$date, "%m"))
+
+# subset the data 
+sub1<- narc3 %>% filter(Year == max(narc3$Year))
+
+# First, the data needed to be aggregated by CSA
+sub1$cnt<-1
+agg<-aggregate(cnt~CSA2010+month,FUN=sum, data=sub1)
+reshaped_agg<-reshape(agg,timevar="month",idvar="CSA2010",direction="wide")
+
+
+# a vector of months
+months<- c('CSA','Jan', 'Feb', 'Mar','Apr','May', 'June', 'July','Aug','Sep', 'Oct', 'Nov','Dec')
+
+# name the columns
+colnames(reshaped_agg)<-months[1:dim(reshaped_agg)[2]]
+
+# Sort by Total (Most to Least)
+reshaped_agg[is.na(reshaped_agg)] <- 0
+reshaped_agg$total<-rowSums(reshaped_agg[2:dim(reshaped_agg)[2]])
+reshaped_agg <- reshaped_agg[order(reshaped_agg$total,decreasing=TRUE),]
+
+
+# Drop Total variable and Make CSA rownames before making a matrix. Then drop CSA names.
+data_for_matrix<-reshaped_agg 
+row.names(data_for_matrix) <- data_for_matrix$CSA
+drop_vars <- names(data_for_matrix) %in% c("CSA", "total") 
+data_for_matrix<-data_for_matrix[!drop_vars]
+
+# if we only have January, add Feb as well since it requires a second column
+if(dim(data_for_matrix)[2]< 2){
+  data_for_matrix$Feb <- 0
+}
+
+# Convert Dataframe to Matrix before creating heatmap.
+csa_matrix<-data.matrix(data_for_matrix)
+
+
+# Creates Heatmaps, different examples below. Colors can by symbolized by row (within a CSA) or across rows (across CSAs)
+heatmap.2(csa_matrix,Rowv=NA, Colv=NA,scale="column",col=brewer.pal(9,"Reds"),dendrogram ="none",cellnote =csa_matrix,  notecol="black",trace="none",key=FALSE,margins=c(5,15),cexCol = 1,lhei=c(1,20))
+  
+
+```
+
+

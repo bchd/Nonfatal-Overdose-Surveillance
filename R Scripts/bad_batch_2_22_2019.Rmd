@@ -1,0 +1,619 @@
+---
+#Non-Fatal Opioid Overdose Clusters in Baltimore, MD
+#A cluster detection report for Bad Batch Alert
+
+
+header-includes:
+- \usepackage{fancyhdr}
+- \usepackage{lipsum}
+- \usepackage{makecell}
+- \usepackage{color}
+- \pagestyle{fancy}
+- \fancyhead[CO,CE]{$\color{red}{\text{\fontsize{20}{20} \selectfont FOR INTERNAL USE ONLY}}$ {\fontsize{20}{20} \selectfont Non-fatal Overdose Spike Alert, \today}}
+- \fancyfoot[CO,CE]{Prepared by Baltimore City Health Department (BCFD EMS Data Source)}
+- \fancyfoot[LE,RO]{\thepage}
+- \fancypagestyle{plain}{\pagestyle{fancy}}
+
+
+output:
+
+  pdf_document: default
+classoption: portrait
+geometry: margin=1.5cm
+
+---
+
+
+
+```{r main_code, include=FALSE, echo = FALSE, warning=FALSE, message=FALSE}
+
+library(dplyr)
+library(rsatscan)
+library(ggplot2)
+library(raster)
+library(maptools)
+library(reshape2)
+library(zoo)
+library(rgdal)
+library(sp)
+library(ggmap) # import basemap
+library(lubridate)
+library(data.table)
+library(broom) # used instead of fortify to plot polygons in ggmap
+library(gridExtra) # plot multiple ggplots
+library(spatstat) # spatial intensity estimation
+library(scales) # for pretty scales for graduated circles
+library(RColorBrewer)
+library(maptools)
+library(rgeos)
+library(sf)
+library(sp)
+library(devtools)
+library(leaflet)
+library(mapview)
+library(stats)
+library(gplots) # for the heatmap
+library(kableExtra) # extra table formatting stuff
+library(scales) # position legend title within ggplot
+
+setwd("O:/Production/Workspace")
+
+# read in baltimore shapefile
+balt<- readOGR('O:/Production/Workspace/Reference Data/Baltimore_Census_Tracts_Project.shp')
+
+#upload the badbatch shapefile
+badbatch<- readOGR('O:/Production/Workspace/Reference Data/Bad_Batch_Regions_Revised.shp')
+
+
+# create the working directory for that specific date
+dir.create(paste("Bad Batch/BadBatch", Sys.Date(), sep = "_"))
+
+# read in the overdose data
+spike <- as.data.frame(st_read(dsn="O:/Opioid_Clusters/Geodatabase/Master.gdb"))
+
+
+# read baltimore coordinate data for the spatial intensity map
+coords<-read.csv('O:/Production/Workspace/Reference Data/baltimore_coordinates_feet.csv')
+coords<- coords[,2:3]
+coords <- as.matrix(coords)
+
+
+# select only what you need
+narcan <- spike %>% dplyr::select(Date, Times___Arrived_on_Scene_Time,
+                                  Incident_Number, Incident_Address, Patient_Age, Patient_Gender,
+                                  Patient_Race__E6_12_, CT10, X, Y, name, 
+                                  POINT_X,
+                                  POINT_Y, CSA2010)
+narcan$long2<-narcan$POINT_X
+narcan$lat2<-narcan$POINT_Y
+
+narcan$POINT_X<-narcan$X
+narcan$POINT_Y<-narcan$Y
+
+# narcan date
+narcan$date <- as.Date(narcan$Date, format = '%m/%d/%Y')
+
+# remove narcan duplicates based on incident number, date, and census tract
+narc2<-narcan[!duplicated(narcan[,c(3, 8, 12)]),]
+narc3<-narc2
+
+
+# get the time in the correct format
+narc3$datetime <- paste(narc3$date, narc3$Times___Ar)
+
+# create unique IDs
+narc3$id <- 1:dim(narc3)[1]
+narc3$case <- 1
+narc3$lat <- narc3$POINT_Y
+narc3$long <- narc3$POINT_X
+
+# set ID as a factor
+narc3$ID <- as.factor(as.character(narc3$id))
+
+
+################ get rid of zero coordinates ######
+narc3 <- narc3 %>% filter(long != 0)
+
+
+# get rid of coordinates far outside the city
+narc3 <- narc3 %>% filter(narc3$POINT_X > 1393800 &
+                                    narc3$POINT_X < 1445600 &
+                                    narc3$POINT_Y > 557700 &
+                                    narc3$POINT_Y < 621470
+                                  
+)
+
+
+
+
+#####################################################################
+
+
+# set the cluster date
+start <- Sys.Date()-1
+# start <-Sys.Date()-1 
+
+# select only the relevant time period
+narc4 <- narc3 %>% filter(date >= start -30 & date <= start)
+
+# write the case file
+mycase <- narc4 %>% dplyr::select(id, case, date)
+
+# write the geo file
+mygeo <- narc4 %>% dplyr::select(id, lat, long)
+
+# set max cluster size in feet
+max_size <- 3960
+
+
+
+# the daily satscan function (outreach team output)
+sat1 <- function(mycase, mygeo, start, max_size){
+  
+  
+  # save working directory
+  td <- setwd("O:/Production/satscan_wd")
+  
+  # get the end date in the right format
+  end_date<-gsub('-', '/', as.character(start))
+  start_date<-gsub('-', '/', as.character(min(narc4$date)))
+  
+  
+  write.cas(mycase, location = td, file = "mycas")
+  write.geo(mygeo, location = td, file = "mygeo", userownames=FALSE)
+  
+  
+  # reset the parameter file
+   invisible(ss.options(reset=TRUE))
+  
+  # build the parameter file
+  ss.options(list(
+    CaseFile="mycas.cas", 
+    CoordinatesFile='mygeo.geo',
+
+    StartDate=start_date, EndDate=end_date,
+    CoordinatesType=1,
+    PrecisionCaseTimes=3,
+
+    # AnalysisType4 is prospective
+    
+    AnalysisType=4, ModelType=2,
+    ScanAreas=1, TimeAggregationUnits=3, 
+    TimeAggregationLength=1,
+    
+    MonteCarloReps=999,
+    
+    OutputShapefiles='y',
+    MostLikelyClusterEachCentroidASCII='y',
+    ReportGiniClusters='n',
+
+    
+    # set temporal window
+    MaxTemporalSizeInterpretation=1,
+    MaxTemporalSize=7,
+    
+    # cartesian coordinates
+    CoordinatesType=0,
+    
+    # maximum circle size
+    UseDistanceFromCenterOption='y',
+    
+    MaxSpatialSizeInDistanceFromCenter=max_size
+
+
+  ))
+  
+  
+  # write the parameter file               
+  write.ss.prm(td, "opi_days")
+  
+  # run satscan (Indiciate the location of SaTScan on the computer)
+  opi_out = satscan(td, "opi_days", sslocation="C:/Program Files/SaTScan", verbose = F)
+  
+  
+  # label the monitors in the cluster
+  cluster_locs<- opi_out$gis %>% dplyr::select(CLUSTER, LOC_ID, LOC_OBS)
+  names(cluster_locs)<- c('CLUSTER', 'ID', 'LOC_OBS')
+  
+  narc4_out<- left_join(narc4, cluster_locs, by = "ID")
+  
+  
+  # get the cluster time lables
+  cols<-opi_out$col
+  
+  # select only those below 0.4
+  cols<-cols[cols$P_VALUE <= 0.4,]
+  
+  # Cluster must have at least 3 cases.
+  cols<-cols[cols$OBSERVED>=3,]
+
+  # map only the significant clusters
+  narc4_out$CLUSTER[!narc4_out$CLUSTER %in% c(cols$CLUSTER, NA)]<-NA
+  
+  # get the NA to be 0 in Clusters
+  narc4_out$CLUSTER[is.na(narc4_out$CLUSTER)]<-0
+  
+  
+  # if there are no clusters, just plot the empty map
+  
+  if(dim(cols)[1]==0){
+    narc4_out$CLUSTER2 <- narc4_out$CLUSTER
+    #narc4_out <- narc4_out %>% filter(narc4_out$POINT_X > 100)
+    cols$balt_total<- numeric(nrow(cols))
+    cols1b<- cols %>% dplyr::select(CLUSTER, START_DATE, END_DATE, OBSERVED, NUMBER_LOC, RADIUS, ODE)
+    names(cols1b)<- c('Cluster','Start_Date', 'End_Date', 'Observed Overdoses', 'Total Overdoses', 'Radius', 'bad_batch')
+
+   
+    
+    # make the empty bad batch map with no clusters 
+    bad_batch_map <- ggplot() + geom_polygon(data = broom::tidy(badbatch), aes(long, lat, group = group),
+               fill = NA, color = 'black', show.legend = F) + theme_void() + coord_equal(ratio=1)  + 
+              ggtitle('Bad Batch Areas (No Overdose Clusters Detected)')
+              
+     
+    list1<-list(cols1b, bad_batch_map)
+       
+    # put it in the final list
+    fin_list<-list()
+    fin_list[[1]]<-list1
+       
+       
+  } else{
+    
+  
+
+  
+# select only the currently observed points in the cluster
+
+if(dim(cols)[1]>0){
+    
+# getting rid of the weird issue where two overdoses that happened at the same address were giving NA in the gis output
+for (i in 1:dim(cols)[1]){
+narc4_out$LOC_OBS[narc4_out$CLUSTER == i & narc4_out$date >= as.Date(cols[i,]$START_DATE) & narc4_out$date <= as.Date(cols[i,]$END_DATE)]<-1
+
+cols$NUMBER_LOC[i] <- length(narc4_out$LOC_OBS[narc4_out$CLUSTER == i])
+}
+
+narc4_out$LOC_OBS[is.na(narc4_out$LOC_OBS)]<-0
+narc4_out$CLUSTER2 <- narc4_out$CLUSTER
+narc4_out$CLUSTER2[narc4_out$LOC_OBS != 1] <-0
+  
+  # get all the cases that happened in the entire area during that time period
+  cols$balt_total <- 0
+  for( i in 1:dim(cols)[1]){
+    
+    narc5<- narc4_out %>% filter(date >= as.Date(as.character(cols$START_DATE))[i] &
+                                   date <= as.Date(as.character(cols$END_DATE))[i])
+    
+    cols$balt_total[i]<-dim(narc5)[1]
+    
+  }
+
+}
+  
+     # get the coordinates of clusters as spatialpointsdataframe
+     center1<-SpatialPointsDataFrame(coords = cbind(cols$Y, cols$X), cols)
+     proj4string(center1) = proj4string(balt)
+     
+     # add buffers of the appropriate radius
+     center2_buff <- gBuffer(center1, width = cols$RADIUS, byid = TRUE)
+     
+     # project resulting clusters into WGS84
+     center2_buff2<- spTransform(center2_buff, CRS("+init=epsg:4326"))  
+  
+
+     # create a final list for the for loop output
+     fin_list<-list()
+    
+     for(i in 1:max(narc4_out$CLUSTER2)){
+       
+       narc_clust<- narc4_out %>% filter(CLUSTER2 == i)
+ 
+       
+       # select the appropriate cluster (lat long)
+       c2<-center2_buff2[center2_buff2$CLUSTER == i,]
+       
+       # select the appropriate cluster NAD83
+       c2_nad83<-center2_buff[center2_buff$CLUSTER == i,]
+       
+       
+
+       # Select color type
+       color1 = 'red'
+        if(cols[i,]$P_VALUE<=0.01){
+          color1 = 'red'
+        }else if(cols[i,]$P_VALUE>0.01 & cols[i,]$P_VALUE<=0.05){
+          color1 = 'tomato'
+        }else if(cols[i,]$P_VALUE>0.05 & cols[i,]$P_VALUE<=0.1){
+          color1 = 'orange'
+        }else if(cols[i,]$P_VALUE>0.1){
+          color1 = 'yellow'
+        }
+
+
+     # make the approriate transformations for the zoomed cluster maps
+     
+     # get the coordinates of clusters as spatialpointsdataframe
+     center1<-SpatialPointsDataFrame(coords = cbind(cols$Y, cols$X), cols)
+     proj4string(center1) = proj4string(balt)
+     
+     # add buffers of the appropriate radius
+     center2_buff <- gBuffer(center1, width = cols$RADIUS, byid = TRUE)
+     
+     # project resulting clusters into WGS84
+     center2_buff2<- spTransform(center2_buff, CRS("+init=epsg:4326"))  
+  
+     
+       # see what badbatch area does the cluster intersect with
+       c2_nad83 <-intersect(badbatch, c2_nad83)
+    
+       # select the appropriate cols
+       cols1<-cols %>% filter(CLUSTER == i)
+       cols1b<- cols1 %>% dplyr::select(CLUSTER, START_DATE, END_DATE, OBSERVED, NUMBER_LOC, RADIUS)
+       names(cols1b)<- c('Cluster','Start_Date', 'End_Date', 'Observed Overdoses', 'Total Overdoses', 'Radius')
+       #cols1b$`p-value`<-round(cols1b$`p-value`, digits = 3)
+       cols1b$Radius<-round(cols1b$Radius, digits = 2)
+
+       # change date format
+       cols1b$Start_Date<-as.Date(as.character(cols1b$Start_Date)) %>% as.character(format = "%m/%d/%Y")
+       cols1b$End_Date<-as.Date(as.character(cols1b$End_Date)) %>% as.character(format = "%m/%d/%Y")
+       
+       cols1b$bad_batch <- toString(c2_nad83@data$BadBatch)
+
+       
+     
+    # subset the bad_batch area that contains a cluster 
+    bad_batch_area <- badbatch[badbatch$BadBatch %in% c2_nad83@data$BadBatch,]
+       
+    # the bad batch map
+    bad_batch_map <- ggplot() + geom_polygon(data = broom::tidy(badbatch), aes(long, lat, group = group),
+    fill = NA, color = 'black', show.legend = F) +
+      
+    geom_polygon(data = broom::tidy(bad_batch_area), aes(x=long, y=lat, group = group),
+    fill = NA, color = color1, size = 1, show.legend = F) +
+      
+    theme_void() + coord_equal(ratio=1)  + 
+    ggtitle('Bad Batch Areas with Identified Overdose Clusters')
+      
+       
+    list1<-list(cols1b, bad_batch_map)
+       
+       # put it in the final list
+       fin_list[[i]]<-list1
+       
+     }
+    }
+    return(fin_list)
+}
+
+
+```
+
+
+
+```{r run_func, results = 'asis', echo=FALSE, warning=FALSE, message=FALSE}
+# run the cluster detection function
+out<- sat1(mycase, mygeo, start, max_size)
+
+e1<-length(out)>=1
+e2<-length(out)>=2
+e3<-length(out)>=3
+e4<-length(out)>=4
+e5<-length(out)>=5
+e6<-length(out)>=6
+e7<-length(out)>=7
+e8<-length(out)>=8
+e9<-length(out)>=9
+e10<-length(out)>=10
+
+
+```
+
+
+\newpage
+```{r plot1, results = 'asis', echo=FALSE, warning=FALSE, message=FALSE, fig.show='hold', fig.height=5, fig.width=5, eval = e1}
+
+# cluster 1
+out[[1]][[1]] %>%
+      
+      kable('markdown',booktabs = T, escape = F,
+col.names = linebreak(c("Cluster",
+                        "Start of\nSpike",
+                        "End of\nSpike",
+                        "Observed\nnon-fatal\nOverdoses\nin cluster",
+                        "Total\nnon-fatal\nOverdoses\nin cluster\nin last\n30 days",
+                        "Radius\n(feet)", 'Bad Batch\nArea'), align = 'c')) %>%
+column_spec(1:14, width = "2cm")
+
+out[[1]][[2]]
+
+```
+
+\newpage
+```{r plot2, results = 'asis', echo=FALSE, warning=FALSE, message=FALSE, fig.show='hold', fig.height=5, fig.width=5, eval = e2}
+
+# cluster 2
+out[[2]][[1]] %>%
+ 
+      
+      kable('markdown',booktabs = T, escape = F,
+col.names = linebreak(c("Cluster",
+                        "Start of\nSpike",
+                        "End of\nSpike",
+                        "Observed\nnon-fatal\nOverdoses\nin cluster",
+                        "Total\nnon-fatal\nOverdoses\nin cluster\nin last\n30 days",
+                        "Radius\n(feet)", 'Bad Batch\nArea'), align = 'c')) %>%
+column_spec(1:14, width = "2cm")
+
+out[[2]][[2]]
+
+```
+
+\newpage
+```{r plot3, results = 'asis', echo=FALSE, warning=FALSE, message=FALSE, fig.show='hold', fig.height=5, fig.width=5, eval = e3}
+
+# cluster 3
+out[[3]][[1]] %>%
+      
+      kable('markdown',booktabs = T, escape = F,
+col.names = linebreak(c("Cluster",
+                        "Start of\nSpike",
+                        "End of\nSpike",
+                        "Observed\nnon-fatal\nOverdoses\nin cluster",
+                        "Total\nnon-fatal\nOverdoses\nin cluster\nin last\n30 days",
+                        "Radius\n(feet)", 'Bad Batch\nArea'), align = 'c')) %>%
+column_spec(1:14, width = "2cm")
+
+out[[3]][[2]]
+
+```
+
+\newpage
+```{r plot4, results = 'asis', echo=FALSE, warning=FALSE, message=FALSE, fig.show='hold', fig.height=5, fig.width=5, eval = e4}
+
+# cluster 4
+out[[4]][[1]] %>%
+      
+      kable('markdown',booktabs = T, escape = F,
+col.names = linebreak(c("Cluster",
+                        "Start of\nSpike",
+                        "End of\nSpike",
+                        "Observed\nnon-fatal\nOverdoses\nin cluster",
+                        "Total\nnon-fatal\nOverdoses\nin cluster\nin last\n30 days",
+                        "Radius\n(feet)", 'Bad Batch\nArea'), align = 'c')) %>%
+column_spec(1:14, width = "2cm")
+
+out[[4]][[2]]
+
+```
+
+
+\newpage
+```{r plot5, results = 'asis', echo=FALSE, warning=FALSE, message=FALSE, fig.show='hold', fig.height=5, fig.width=5, eval = e5}
+
+# cluster 5
+out[[5]][[1]] %>%
+      
+      kable('markdown',booktabs = T, escape = F,
+col.names = linebreak(c("Cluster",
+                        "Start of\nSpike",
+                        "End of\nSpike",
+                        "Observed\nnon-fatal\nOverdoses\nin cluster",
+                        "Total\nnon-fatal\nOverdoses\nin cluster\nin last\n30 days",
+                        "Radius\n(feet)", 'Bad Batch\nArea'), align = 'c')) %>%
+column_spec(1:14, width = "2cm")
+
+out[[5]][[2]]
+
+
+```
+
+\newpage
+```{r plot6, results = 'asis', echo=FALSE, warning=FALSE, message=FALSE, fig.show='hold', fig.height=5, fig.width=5, eval = e6}
+
+# cluster 6
+out[[6]][[1]] %>%
+      
+      kable('markdown',booktabs = T, escape = F,
+col.names = linebreak(c("Cluster",
+                        "Start of\nSpike",
+                        "End of\nSpike",
+                        "Observed\nnon-fatal\nOverdoses\nin cluster",
+                        "Total\nnon-fatal\nOverdoses\nin cluster\nin last\n30 days",
+                        "Radius\n(feet)", 'Bad Batch\nArea'), align = 'c')) %>%
+column_spec(1:14, width = "2cm")
+
+out[[6]][[2]]
+
+
+```
+
+\newpage
+```{r plot7, results = 'asis', echo=FALSE, warning=FALSE, message=FALSE, fig.show='hold', fig.height=5, fig.width=5, eval = e7}
+
+# cluster 7
+out[[7]][[1]] %>%
+      
+      kable('markdown',booktabs = T, escape = F,
+col.names = linebreak(c("Cluster",
+                        "Start of\nSpike",
+                        "End of\nSpike",
+                        "Observed\nnon-fatal\nOverdoses\nin cluster",
+                        "Total\nnon-fatal\nOverdoses\nin cluster\nin last\n30 days",
+                        "Radius\n(feet)", 'Bad Batch\nArea'), align = 'c')) %>%
+column_spec(1:14, width = "2cm")
+
+out[[7]][[2]]
+
+
+```
+
+\newpage
+```{r plot8, results = 'asis', echo=FALSE, warning=FALSE, message=FALSE, fig.show='hold', fig.height=5, fig.width=5, eval = e8}
+
+# cluster 8
+out[[8]][[1]] %>%
+      
+      kable('markdown',booktabs = T, escape = F,
+col.names = linebreak(c("Cluster",
+                        "Start of\nSpike",
+                        "End of\nSpike",
+                        "Observed\nnon-fatal\nOverdoses\nin cluster",
+                        "Total\nnon-fatal\nOverdoses\nin cluster\nin last\n30 days",
+                        "Radius\n(feet)", 'Bad Batch\nArea'), align = 'c')) %>%
+column_spec(1:14, width = "2cm")
+
+out[[8]][[2]]
+
+
+```
+
+\newpage
+```{r plot9, results = 'asis', echo=FALSE, warning=FALSE, message=FALSE, fig.show='hold', fig.height=5, fig.width=5, eval = e9}
+
+# cluster 9
+out[[9]][[1]] %>%
+      
+      kable('markdown',booktabs = T, escape = F,
+col.names = linebreak(c("Cluster",
+                        "Start of\nSpike",
+                        "End of\nSpike",
+                        "Observed\nnon-fatal\nOverdoses\nin cluster",
+                        "Total\nnon-fatal\nOverdoses\nin cluster\nin last\n30 days",
+                        "Radius\n(feet)", 'Bad Batch\nArea'), align = 'c')) %>%
+column_spec(1:14, width = "2cm")
+
+out[[9]][[2]]
+
+
+```
+
+\newpage
+```{r plot10, results = 'asis', echo=FALSE, warning=FALSE, message=FALSE, fig.show='hold', fig.height=5, fig.width=5, eval = e10}
+
+# cluster 10
+out[[10]][[1]] %>%
+      
+      kable('markdown',booktabs = T, escape = F,
+col.names = linebreak(c("Cluster",
+                        "Start of\nSpike",
+                        "End of\nSpike",
+                        "Observed\nnon-fatal\nOverdoses\nin cluster",
+                        "Total\nnon-fatal\nOverdoses\nin cluster\nin last\n30 days",
+                        "Radius\n(feet)", 'Bad Batch\nArea'), align = 'c')) %>%
+column_spec(1:14, width = "2cm")
+
+out[[10]][[2]]
+
+
+```
+
+
+
+
+
+
+
+
+
+
